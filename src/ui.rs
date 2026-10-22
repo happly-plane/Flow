@@ -1,77 +1,82 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
-    text::Span,
-    widgets::{Block, Borders, Paragraph, Sparkline},
+    style::{Color, Modifier, Style},
+    widgets::{Block, Borders, Gauge, Row, Table},
     Frame,
 };
 
 use crate::state::AppState;
-use crate::big_text::BigText;
 
 pub fn draw(frame: &mut Frame, app: &AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(2)
+        .margin(1)
         .constraints([
-            Constraint::Length(7), // Big text area
-            Constraint::Length(5), // Input sparkline
-            Constraint::Length(5), // Output sparkline
-            Constraint::Min(0),    // Footer
+            Constraint::Length(3), // CPU
+            Constraint::Length(3), // Mem
+            Constraint::Min(0),    // Processes
         ])
         .split(frame.area());
 
-    let header_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[0]);
+    // CPU Usage
+    let sys = &app.sys;
+    let global_cpu = sys.global_cpu_usage();
+    let cpu_gauge = Gauge::default()
+        .block(Block::default().title(" CPU Usage ").borders(Borders::ALL))
+        .gauge_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .percent(global_cpu as u16);
+    frame.render_widget(cpu_gauge, chunks[0]);
 
-    // Format numbers
-    let input_str = format!("{}", app.input_tokens_total);
-    let output_str = format!("{}", app.output_tokens_total);
+    // Memory Usage
+    let total_mem = sys.total_memory();
+    let used_mem = sys.used_memory();
+    let mem_percent = if total_mem > 0 {
+        ((used_mem as f64 / total_mem as f64) * 100.0) as u16
+    } else {
+        0
+    };
 
-    // Input total big text
-    let input_big_text = BigText::new(&input_str).style(Style::default().fg(Color::Cyan));
-    frame.render_widget(input_big_text, header_chunks[0]);
-    frame.render_widget(
-        Paragraph::new("Input Tokens").style(Style::default().fg(Color::Cyan)),
-        Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(5), Constraint::Length(2)]).split(header_chunks[0])[1]
-    );
+    let mem_label = format!("{:.1} GB / {:.1} GB", used_mem as f64 / 1_073_741_824.0, total_mem as f64 / 1_073_741_824.0);
 
-    // Output total big text
-    let output_big_text = BigText::new(&output_str).style(Style::default().fg(Color::Yellow));
-    frame.render_widget(output_big_text, header_chunks[1]);
-    frame.render_widget(
-        Paragraph::new("Output Tokens").style(Style::default().fg(Color::Yellow)),
-        Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(5), Constraint::Length(2)]).split(header_chunks[1])[1]
-    );
+    let mem_gauge = Gauge::default()
+        .block(Block::default().title(" Memory Usage ").borders(Borders::ALL))
+        .gauge_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
+        .percent(mem_percent)
+        .label(mem_label);
+    frame.render_widget(mem_gauge, chunks[1]);
 
-    // Input Sparkline
-    let input_hist: Vec<u64> = app.input_history.iter().copied().collect();
-    let max_in = input_hist.iter().max().copied().unwrap_or(1).max(1);
-    let in_sparkline = Sparkline::default()
-        .block(Block::default().title("Input (tokens/s)").borders(Borders::NONE))
-        .data(&input_hist)
-        .max(max_in)
-        .style(Style::default().fg(Color::Cyan));
-    frame.render_widget(in_sparkline, chunks[1]);
+    // Processes
+    let mut processes: Vec<_> = sys.processes().values().collect();
+    processes.sort_by(|a, b| b.cpu_usage().partial_cmp(&a.cpu_usage()).unwrap_or(std::cmp::Ordering::Equal));
 
-    // Output Sparkline
-    let output_hist: Vec<u64> = app.output_history.iter().copied().collect();
-    let max_out = output_hist.iter().max().copied().unwrap_or(1).max(1);
-    let out_sparkline = Sparkline::default()
-        .block(Block::default().title("Output (tokens/s)").borders(Borders::NONE))
-        .data(&output_hist)
-        .max(max_out)
-        .style(Style::default().fg(Color::Yellow));
-    frame.render_widget(out_sparkline, chunks[2]);
+    let mut rows = vec![];
+    for p in processes.iter().take(50) { // Limit to top 50 to save rendering cost
+        let mem_mb = p.memory() as f64 / 1_048_576.0;
+        let row = Row::new(vec![
+            p.pid().to_string(),
+            p.name().to_str().unwrap_or("").to_string(),
+            format!("{:.1}%", p.cpu_usage()),
+            format!("{:.1} MB", mem_mb),
+        ]);
+        rows.push(row);
+    }
 
-    // Footer
-    let footer_text = format!(
-        "flow-claude · Input: {} · Output: {} · Press 'q' to quit",
-        app.input_tokens_total, app.output_tokens_total
-    );
-    let footer = Paragraph::new(Span::raw(footer_text))
-        .style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(footer, chunks[3]);
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(8),
+            Constraint::Min(20),
+            Constraint::Length(10),
+            Constraint::Length(15),
+        ],
+    )
+    .header(
+        Row::new(vec!["PID", "Name", "CPU", "Memory"])
+            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+            .bottom_margin(1),
+    )
+    .block(Block::default().title(" Processes ").borders(Borders::ALL))
+    .column_spacing(2);
+
+    frame.render_widget(table, chunks[2]);
 }

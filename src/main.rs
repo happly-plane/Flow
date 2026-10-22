@@ -1,8 +1,5 @@
-mod models;
 mod state;
-mod monitor;
 mod ui;
-mod big_text;
 
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
@@ -13,16 +10,11 @@ use ratatui::{
     backend::CrosstermBackend,
     Terminal,
 };
-use std::path::PathBuf;
 use std::{error::Error, io, time::Duration};
-use tokio::sync::mpsc;
-use tokio::time::interval;
 
-use monitor::{Monitor, MonitorEvent};
 use state::AppState;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     // setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -32,7 +24,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // create app and run it
     let app = AppState::new();
-    let res = run_app(&mut terminal, app).await;
+    let res = run_app(&mut terminal, app);
 
     // restore terminal
     disable_raw_mode()?;
@@ -50,45 +42,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: AppState) -> Result<(), Box<dyn Error>> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| String::from("~"));
-    let mut watch_path = PathBuf::from(home);
-    watch_path.push(".claude/projects");
-
-    let (tx, mut rx) = mpsc::channel(100);
-    let monitor = Monitor::new(watch_path, tx);
-
-    tokio::spawn(async move {
-        if let Err(e) = monitor.start().await {
-            eprintln!("Monitor error: {:?}", e);
-        }
-    });
-
-    let mut tick_rate = interval(Duration::from_millis(250));
+fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: AppState) -> Result<(), Box<dyn Error>> {
+    let tick_rate = Duration::from_millis(500);
+    let mut last_tick = std::time::Instant::now();
 
     loop {
         terminal.draw(|f| ui::draw(f, &app))?;
 
-        tokio::select! {
-            _ = tick_rate.tick() => {
-                app.tick();
+        let timeout = tick_rate
+            .checked_sub(last_tick.elapsed())
+            .unwrap_or_else(|| Duration::from_secs(0));
 
-                // Poll terminal events without blocking the async loop for too long
-                if event::poll(Duration::from_millis(10))? {
-                    if let Event::Key(key) = event::read()? {
-                        if let KeyCode::Char('q') = key.code {
-                            return Ok(());
-                        }
-                    }
+        if event::poll(timeout)? {
+            if let Event::Key(key) = event::read()? {
+                if let KeyCode::Char('q') = key.code {
+                    return Ok(());
                 }
             }
-            Some(event) = rx.recv() => {
-                match event {
-                    MonitorEvent::UsageUpdate { input_tokens, output_tokens } => {
-                        app.add_usage(input_tokens, output_tokens);
-                    }
-                }
-            }
+        }
+
+        if last_tick.elapsed() >= tick_rate {
+            app.on_tick();
+            last_tick = std::time::Instant::now();
         }
     }
 }
