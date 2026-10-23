@@ -1,7 +1,8 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Gauge, Row, Table},
+    text::{Line, Span},
+    widgets::{Block, Borders, Gauge, Paragraph, Row, Table},
     Frame,
 };
 
@@ -14,6 +15,7 @@ pub fn draw(frame: &mut Frame, app: &AppState) {
         .constraints([
             Constraint::Length(3), // CPU
             Constraint::Length(3), // Mem
+            Constraint::Length(4), // ARM Stats
             Constraint::Min(0),    // Processes
         ])
         .split(frame.area());
@@ -44,6 +46,39 @@ pub fn draw(frame: &mut Frame, app: &AppState) {
         .percent(mem_percent)
         .label(mem_label);
     frame.render_widget(mem_gauge, chunks[1]);
+
+    // ARM Stats
+    let mut arm_lines = vec![];
+    let gpu_freq_str = match app.arm_data.gpu_freq_mhz {
+        Some(freq) => format!("{} MHz", freq),
+        None => "N/A".to_string(),
+    };
+    let gpu_load_str = match app.arm_data.gpu_load_percent {
+        Some(load) => format!("{}%", load),
+        None => "N/A".to_string(),
+    };
+    arm_lines.push(Line::from(vec![
+        Span::styled("GPU Freq: ", Style::default().fg(Color::Yellow)),
+        Span::raw(gpu_freq_str),
+        Span::raw(" | "),
+        Span::styled("GPU Load: ", Style::default().fg(Color::Yellow)),
+        Span::raw(gpu_load_str),
+    ]));
+
+    let temps_str = if app.arm_data.temps.is_empty() {
+        "N/A".to_string()
+    } else {
+        app.arm_data.temps.iter().map(|(name, temp)| format!("{}: {:.1}°C", name, temp)).collect::<Vec<_>>().join(", ")
+    };
+    arm_lines.push(Line::from(vec![
+        Span::styled("Temps: ", Style::default().fg(Color::Red)),
+        Span::raw(temps_str),
+    ]));
+
+    let arm_para = Paragraph::new(arm_lines)
+        .block(Block::default().title(" ARM Sensors ").borders(Borders::ALL));
+    frame.render_widget(arm_para, chunks[2]);
+
 
     // Processes
     let mut processes: Vec<_> = sys.processes().values().collect();
@@ -78,5 +113,5 @@ pub fn draw(frame: &mut Frame, app: &AppState) {
     .block(Block::default().title(" Processes ").borders(Borders::ALL))
     .column_spacing(2);
 
-    frame.render_widget(table, chunks[2]);
+    frame.render_widget(table, chunks[3]);
 }
